@@ -3,6 +3,7 @@
 // at all while the overlay is hidden, and only user32/gdi32/shell32/comdlg32 mapped in.
 // Build: build.ps1 (the csc.exe that ships with Windows, no SDK needed).
 using System;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -184,8 +185,6 @@ static class Program
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] static extern IntPtr GetTopWindow(IntPtr h);
-    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool SetTimer(IntPtr h, UIntPtr id, int ms, IntPtr proc);
@@ -193,11 +192,10 @@ static class Program
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
     [DllImport("user32.dll")] static extern IntPtr SetCursor(IntPtr h);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr LoadCursor(IntPtr h, string id);
+    [DllImport("user32.dll")] static extern IntPtr LoadCursorW(IntPtr h, IntPtr id);
     [DllImport("user32.dll")] static extern bool PtInRect(ref RECT r, POINT p);
     [DllImport("user32.dll")] static extern bool InvalidateRect(IntPtr h, ref RECT r, bool erase);
     [DllImport("user32.dll")] static extern bool InvalidateRect(IntPtr h, IntPtr r, bool erase);
-    [DllImport("user32.dll")] static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
     [DllImport("user32.dll")] static extern IntPtr BeginPaint(IntPtr h, out PAINTSTRUCT ps);
     [DllImport("user32.dll")] static extern bool EndPaint(IntPtr h, ref PAINTSTRUCT ps);
     [DllImport("user32.dll")] static extern int GetSystemMetrics(int index);
@@ -213,8 +211,6 @@ static class Program
     [DllImport("user32.dll")] static extern void PostQuitMessage(int code);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
     [DllImport("user32.dll")] static extern IntPtr DefWindowProcW(IntPtr h, uint msg, IntPtr w, IntPtr l);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowW(string cls, string win);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr h, StringBuilder sb, int cap);
 
     [DllImport("user32.dll")] static extern IntPtr CreatePopupMenu();
     [DllImport("user32.dll")] static extern bool DestroyMenu(IntPtr h);
@@ -222,11 +218,9 @@ static class Program
     [DllImport("user32.dll")] static extern int TrackPopupMenu(IntPtr h, int flags, int x, int y, int res, IntPtr wnd, IntPtr rect);
 
     [DllImport("gdi32.dll")] static extern IntPtr CreateSolidBrush(uint color);
-    [DllImport("gdi32.dll")] static extern IntPtr CreateRectRgn(int x1, int y1, int x2, int y2);
-    [DllImport("gdi32.dll")] static extern int CombineRgn(IntPtr dst, IntPtr a, IntPtr b, int mode);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr o);
     [DllImport("gdi32.dll")] static extern IntPtr CreatePen(int style, int width, uint color);
     [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr o);
-    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr o);
     [DllImport("user32.dll")] static extern bool FillRect(IntPtr dc, ref RECT r, IntPtr brush);
     [DllImport("gdi32.dll")] static extern bool MoveToEx(IntPtr dc, int x, int y, IntPtr old);
     [DllImport("gdi32.dll")] static extern bool LineTo(IntPtr dc, int x, int y);
@@ -251,13 +245,11 @@ static class Program
 
     const int WM_APP_ICON = unchecked((int)0x8000) + 1;
     const int ID_TOGGLE = 1001, ID_SETTINGS = 1002, ID_QUIT = 1003;
-    const int TID_KEEPER = 1, TID_IDLE = 2;
+    const int TID_IDLE = 2; // close-button fade-out timer
 
     const int SW_HIDE = 0, SW_SHOWNA = 8;
-    const uint SWP_NOMOVE = 0x2, SWP_NOSIZE = 0x1, SWP_NOACTIVATE = 0x10, SWP_NOZORDER = 0x4;
+    const uint SWP_NOACTIVATE = 0x10, SWP_NOZORDER = 0x4;
     const uint MOUSEEVENTF_LEFTDOWN = 0x0002, MOUSEEVENTF_LEFTUP = 0x0004;
-    static readonly IntPtr HWND_TOP = IntPtr.Zero;
-    const uint GW_HWNDNEXT = 2;
     const int NIM_ADD = 0, NIM_DELETE = 2;
     const int NIF_MESSAGE = 1, NIF_ICON = 2, NIF_TIP = 4;
     const uint TPM_RETURNCMD = 0x0100, TPM_RIGHTBUTTON = 0x0002;
@@ -336,6 +328,18 @@ static class Program
         return dpi > 0 ? dpi : 96;
     }
 
+    // An unhandled exception inside a window procedure brings the whole process down;
+    // record exactly what threw instead, so a misbehaving feature is diagnosable.
+    static void logCrash(string where, Exception ex)
+    {
+        try
+        {
+            File.AppendAllText(Path.Combine(Path.GetTempPath(), "TrayBlackScreen.log"),
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + where + "\r\n" + ex + "\r\n\r\n");
+        }
+        catch { }
+    }
+
     #endregion
 
     [STAThread]
@@ -368,8 +372,8 @@ static class Program
     static void Boot()
     {
         var inst = GetModuleHandleW(null);
-        cursorArrow = LoadCursor(IntPtr.Zero, "Arrow");
-        cursorHand = LoadCursor(IntPtr.Zero, "Hand");
+        cursorArrow = LoadCursorW(IntPtr.Zero, (IntPtr)32512); // IDC_ARROW
+        cursorHand = LoadCursorW(IntPtr.Zero, (IntPtr)32649); // IDC_HAND
         guiFont = GetStockObject(17); // DEFAULT_GUI_FONT, used for dialogs/labels
 
         trayProc = TrayProc;
@@ -389,14 +393,17 @@ static class Program
             hInstance = inst,
             lpszClassName = "TrayBlackScreenOverlay",
             lpfnWndProc = overlayProc,
+            hCursor = cursorArrow,
             style = 0x00000001 | 0x00000002, // CS_VREDRAW | CS_HREDRAW
         };
         RegisterClassW(ref overlayClass);
-        // Popup, never activated (mouse clicks do not make it the foreground window) and
-        // never taken into Alt+Tab; the auto-hidden taskbar must still reveal on hover.
+        // Topmost popup that never activates (mouse clicks do not make it the foreground
+        // window) and never appears in Alt+Tab. The auto-hidden taskbar does not reveal
+        // under a fullscreen window; that is accepted by design - the overlay's close
+        // button or the tray icon turns the fill off.
         const int WS_POPUP = unchecked((int)0x80000000);
-        const int WS_EX_NOACTIVATE = 0x08000000, WS_EX_TOOLWINDOW = 0x00000080;
-        overlayWnd = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, "TrayBlackScreenOverlay", "",
+        const int WS_EX_NOACTIVATE = 0x08000000, WS_EX_TOOLWINDOW = 0x00000080, WS_EX_TOPMOST = 0x00000008;
+        overlayWnd = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST, "TrayBlackScreenOverlay", "",
             WS_POPUP, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, inst, IntPtr.Zero);
 
         AddTrayIcon();
@@ -406,22 +413,23 @@ static class Program
 
     static IntPtr TrayProc(IntPtr h, uint msg, IntPtr w, IntPtr l)
     {
-        switch (msg)
+        try
         {
-            case WM_NULL:
-                return IntPtr.Zero;
-            case WM_APP_ICON:
-                if ((uint)((long)l & 0xFFFF) == WM_LBUTTONUP) Toggle();
-                else if ((uint)((long)l & 0xFFFF) == WM_RBUTTONUP) ShowMenu(h);
-                return IntPtr.Zero;
-            case WM_TIMER:
-                if ((long)w == TID_KEEPER && shown) KeepOverlayAbove();
-                return IntPtr.Zero;
-            case WM_DESTROY:
-                PostQuitMessage(0);
-                return IntPtr.Zero;
+            switch (msg)
+            {
+                case WM_NULL:
+                    return IntPtr.Zero;
+                case WM_APP_ICON:
+                    if ((uint)((long)l & 0xFFFF) == WM_LBUTTONUP) Toggle();
+                    else if ((uint)((long)l & 0xFFFF) == WM_RBUTTONUP) ShowMenu(h);
+                    return IntPtr.Zero;
+                case WM_DESTROY:
+                    PostQuitMessage(0);
+                    return IntPtr.Zero;
+            }
+            return DefWindowProcW(h, msg, w, l);
         }
-        return DefWindowProcW(h, msg, w, l);
+        catch (Exception ex) { logCrash("TrayProc msg=" + msg, ex); return IntPtr.Zero; }
     }
 
     static void AddTrayIcon()
@@ -476,27 +484,14 @@ static class Program
         SetOverlayBounds();
         ShowWindow(overlayWnd, SW_SHOWNA);
         ResetHover();
-        KeepOverlayAbove();
-        SetTimer(trayWnd, (UIntPtr)TID_KEEPER, 500, IntPtr.Zero);
         shown = true;
     }
 
     static void HideOverlay()
     {
-        KillTimer(trayWnd, (UIntPtr)TID_KEEPER);
         ShowWindow(overlayWnd, SW_HIDE);
         ResetHover();
-        if (stripOpen) UpdateEdgeRegion(overlayWnd, new POINT()); // restore the full region
         shown = false;
-    }
-
-    // The overlay stays a normal (non-topmost) window on top of other normal windows:
-    // the auto-hidden taskbar is not topmost while hidden, so a topmost overlay would
-    // sit above it and swallow the reveal. On hover the taskbar raises itself to topmost.
-    static void KeepOverlayAbove()
-    {
-        ShowWindow(overlayWnd, SW_SHOWNA);
-        SetWindowPos(overlayWnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
     static void SetOverlayBounds()
@@ -515,7 +510,9 @@ static class Program
 
     static IntPtr OverlayProc(IntPtr h, uint msg, IntPtr w, IntPtr l)
     {
-        switch (msg)
+        try
+        {
+            switch (msg)
         {
             case WM_ERASEBKGND:
                 // WM_PAINT fills the whole update rect; erasing first would be double work.
@@ -544,6 +541,8 @@ static class Program
                 }
         }
         return DefWindowProcW(h, msg, w, l);
+        }
+        catch (Exception ex) { logCrash("OverlayProc msg=" + msg, ex); return IntPtr.Zero; }
     }
 
     static void OnMouseMove(IntPtr h, POINT p)
@@ -553,7 +552,6 @@ static class Program
         if (p.X == lastMove.X && p.Y == lastMove.Y) return;
         lastMove = p;
 
-        UpdateEdgeRegion(h, p);
         SetTimer(h, (UIntPtr)TID_IDLE, 1200, IntPtr.Zero); // restart the fade-out countdown
         bool hot = PtInRect(ref closeRect, p);
         if (!closeVisible)
@@ -626,40 +624,6 @@ static class Program
         EndPaint(h, ref ps);
     }
 
-    // The auto-hidden taskbar reveals only when the cursor is over the screen edge area
-    // and no window occupies it, so while the cursor grazes the bottom edge of the primary
-    // screen the overlay drops that 16 px strip from its region. Nothing is lit permanently:
-    // the taskbar slides up over the strip while the cursor stays there, and the region is
-    // restored as soon as the cursor moves back up. This is what keeps the reveal working
-    // on current Windows (it stopped allowing a mere non-topmost overlay over the band).
-    static bool stripOpen;
-
-    static void UpdateEdgeRegion(IntPtr h, POINT p)
-    {
-        RECT win;
-        GetWindowRect(h, out win);
-        int bandBottom = GetSystemMetrics(SM_CYSCREEN) - win.Top; // primary screen bottom, client coords
-        int bandStart = bandBottom - 16;
-        bool want = p.Y >= bandStart;
-        if (want == stripOpen) return;
-        stripOpen = want;
-        int w = win.Right - win.Left, hh = win.Bottom - win.Top;
-        IntPtr rgn;
-        if (!want)
-        {
-            rgn = CreateRectRgn(0, 0, w, hh);
-            SetWindowRgn(h, rgn, true);
-            return;
-        }
-        var a = CreateRectRgn(0, 0, w, bandStart);
-        var b = CreateRectRgn(0, bandBottom, w, hh);
-        rgn = CreateRectRgn(0, 0, 0, 0);
-        CombineRgn(rgn, a, b, 2); // RGN_OR
-        SetWindowRgn(h, rgn, true);
-        DeleteObject(a);
-        DeleteObject(b);
-    }
-
     // The button only shows up while the mouse is being moved, then fades away again:
     // anything permanently drawn on the screen burns into an OLED panel.
     static void HideClose()
@@ -689,6 +653,7 @@ static class Program
     const int CTL_COLOR = 101, CTL_ALL = 102, CTL_RUN = 103, CTL_OK = 1, CTL_CANCEL = 2;
 
     static IntPtr hwndColorBtn, hwndAll, hwndRun;
+    static bool settingsClassRegistered;
 
     static void OpenSettings()
     {
@@ -697,14 +662,18 @@ static class Program
         int s = Math.Max(1, (DpiOf(trayWnd) + 47) / 96); // dial physical sizes at 96/120/144...
         settingsColorRef = ColorRefOf(Config.Fill);
 
-        settingsProc = SettingsProc;
-        var settingsClass = new WNDCLASSW
+        if (!settingsClassRegistered)
         {
-            hInstance = GetModuleHandleW(null),
-            lpszClassName = "TrayBlackScreenSettings",
-            lpfnWndProc = settingsProc,
-        };
-        RegisterClassW(ref settingsClass);
+            settingsProc = SettingsProc;
+            var settingsClass = new WNDCLASSW
+            {
+                hInstance = GetModuleHandleW(null),
+                lpszClassName = "TrayBlackScreenSettings",
+                lpfnWndProc = settingsProc,
+            };
+            RegisterClassW(ref settingsClass);
+            settingsClassRegistered = true;
+        }
 
         const int WS_CAPTION = 0x00C00000, WS_SYSMENU = 0x00080000, WS_CHILD = 0x40000000, WS_VISIBLE = 0x10000000;
         const int BS_PUSHBUTTON = 0x0, BS_DEFPUSHBUTTON = 0x1, BS_AUTOCHECKBOX = 0x3, BS_OWNERDRAW = 0xB;
@@ -739,7 +708,9 @@ static class Program
 
     static IntPtr SettingsProc(IntPtr h, uint msg, IntPtr w, IntPtr l)
     {
-        switch (msg)
+        try
+        {
+            switch (msg)
         {
             case WM_CLOSE:
                 DestroyWindow(h);
@@ -772,7 +743,6 @@ static class Program
                         {
                             var brush = FillBrush; // recreate for the new fill
                             SetOverlayBounds();
-                            KeepOverlayAbove();
                             InvalidateRect(overlayWnd, IntPtr.Zero, false);
                             GC.KeepAlive(brush);
                         }
@@ -787,7 +757,9 @@ static class Program
                 PaintColorButton(h, (DRAWITEMSTRUCT)Marshal.PtrToStructure(l, typeof(DRAWITEMSTRUCT)));
                 return (IntPtr)1;
         }
-        return DefWindowProcW(h, msg, w, l);
+            return DefWindowProcW(h, msg, w, l);
+        }
+        catch (Exception ex) { logCrash("SettingsProc msg=" + msg, ex); return IntPtr.Zero; }
     }
 
     static void PaintColorButton(IntPtr h, DRAWITEMSTRUCT d)
@@ -853,7 +825,6 @@ static class Program
 
     static void Quit()
     {
-        KillTimer(trayWnd, (UIntPtr)TID_KEEPER);
         KillTimer(overlayWnd, (UIntPtr)TID_IDLE);
         RemoveTrayIcon();
         PostQuitMessage(0);
@@ -873,15 +844,6 @@ static class Program
             }
             Thread.Sleep(10);
         } while (Environment.TickCount < until);
-    }
-
-    static int IndexInZOrder(IntPtr target)
-    {
-        if (target == IntPtr.Zero) return -1;
-        int i = 0;
-        for (var h = GetTopWindow(IntPtr.Zero); h != IntPtr.Zero; h = GetWindow(h, GW_HWNDNEXT), i++)
-            if (h == target) return i;
-        return -1;
     }
 
     static int SelfTest()
@@ -908,14 +870,12 @@ static class Program
             Config.AllScreens = false;
             Toggle();
             Pump(800);
-            RECT tbRect, bounds;
-            var taskbar = FindWindowW("Shell_TrayWnd", null);
-            GetWindowRect(taskbar, out tbRect);
+            RECT bounds;
             GetWindowRect(overlayWnd, out bounds);
             var primary = new RECT { Left = 0, Top = 0, Right = GetSystemMetrics(SM_CXSCREEN), Bottom = GetSystemMetrics(SM_CYSCREEN) };
             Console.WriteLine("primary=" + primary.Left + "," + primary.Top + "," + primary.Right + "," + primary.Bottom);
 
-            if (GetForegroundWindow() == overlayWnd) { Console.WriteLine("FAIL: overlay took the foreground (blocks taskbar auto-show)"); failures++; }
+            if (GetForegroundWindow() == overlayWnd) { Console.WriteLine("FAIL: overlay took the foreground"); failures++; }
 
             if (bounds.Left > primary.Left || bounds.Top > primary.Top ||
                 bounds.Right < primary.Right || bounds.Bottom < primary.Bottom)
@@ -924,42 +884,6 @@ static class Program
                                   " does not cover the primary screen");
                 failures++;
             }
-
-            // Auto-hidden taskbar hangs off the screen bottom; hovering the edge must slide it
-            // back in and it must be above the overlay, or the user cannot click it.
-            bool wasHidden = tbRect.Bottom > primary.Bottom;
-            SetCursorPos(primary.Left + (primary.Right - primary.Left) / 2, primary.Bottom - 1);
-            bool revealed = false;
-            for (int i = 0; i < 40 && !revealed; i++)
-            {
-                Pump(100);
-                RECT r;
-                if (GetWindowRect(taskbar, out r)) revealed = r.Bottom <= primary.Bottom;
-            }
-            int overlayIdx = IndexInZOrder(overlayWnd);
-            int taskbarIdx = IndexInZOrder(taskbar);
-            Console.WriteLine("taskbarWasHidden=" + wasHidden + " revealed=" + revealed +
-                              " overlay z=" + overlayIdx + " taskbar z=" + taskbarIdx);
-            {
-                var fg = GetForegroundWindow();
-                var cls = new StringBuilder(64);
-                GetClassNameW(fg, cls, 64);
-                RECT fr;
-                GetWindowRect(fg, out fr);
-                Console.WriteLine("fg class=" + cls.ToString() + " rect=" + fr.Left + "," + fr.Top + "," + fr.Right + "," + fr.Bottom +
-                                  " taskbar rect=" + tbRect.Left + "," + tbRect.Top + "," + tbRect.Right + "," + tbRect.Bottom);
-            }
-            if (wasHidden && !revealed) { Console.WriteLine("FAIL: taskbar did not reveal on hover"); failures++; }
-            // With the edge-strip mechanism the overlay does not need (and does not get)
-            // a z-position under the revealed taskbar: the bottom strip is cut out of the
-            // overlay's region while the cursor hugs the edge, so the band shows and
-            // receives clicks through that gap.
-            if (taskbarIdx < 0 || overlayIdx < 0) { Console.WriteLine("FAIL: taskbar/overlay not found in z-order"); failures++; }
-
-            Pump(700);
-            RECT stay;
-            GetWindowRect(taskbar, out stay);
-            if (wasHidden && stay.Bottom > primary.Bottom) { Console.WriteLine("FAIL: taskbar slid back while hovered"); failures++; }
 
             HideOverlay();
             Pump(300);
