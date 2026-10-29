@@ -301,8 +301,8 @@ static class Program
     {
         get
         {
-            uint c = ColorRefOf(Config.Fill);
-            if (c != fillColorRef || fillBrush == IntPtr.Zero)
+            uint c = fillColorRef;
+            if (fillBrush == IntPtr.Zero)
             {
                 if (fillBrush != IntPtr.Zero) DeleteObject(fillBrush);
                 fillColorRef = c;
@@ -310,6 +310,17 @@ static class Program
             }
             return fillBrush;
         }
+    }
+
+    static void RefreshFillBrush()
+    {
+        uint c = ColorRefOf(Config.Fill);
+        if (fillBrush != IntPtr.Zero && c != fillColorRef)
+        {
+            DeleteObject(fillBrush);
+            fillBrush = IntPtr.Zero;
+        }
+        fillColorRef = c;
     }
 
     static uint Readable(uint colorRef)
@@ -481,6 +492,7 @@ static class Program
     public static void Toggle()
     {
         if (shown) { HideOverlay(); return; }
+        RefreshFillBrush();
         SetOverlayBounds();
         ShowWindow(overlayWnd, SW_SHOWNA);
         ResetHover();
@@ -741,6 +753,7 @@ static class Program
                         Autostart.Enabled = SendMessageW(hwndRun, BM_GETCHECK, IntPtr.Zero, IntPtr.Zero) != 0;
                         if (shown)
                         {
+                            RefreshFillBrush();
                             var brush = FillBrush; // recreate for the new fill
                             SetOverlayBounds();
                             InvalidateRect(overlayWnd, IntPtr.Zero, false);
