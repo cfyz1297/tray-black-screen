@@ -1,43 +1,85 @@
 # tray-black-screen
 
-Tray app for Windows 11: click the tray icon (or «Вкл/Выкл» in the menu) → fill color over the screen,
-same again → back. The overlay carries a close button (×) in the top-right corner of the primary
-screen, Win11-style (red on hover). It only appears while the mouse is being moved and fades out
-after ~1.2 s of stillness, so nothing is permanently drawn on the panel. The cursor stays visible
-while the fill is on.
+[English](#english) | [Русский](#русский)
 
-## Implementation
+## English
 
-Single C# file built with the csc.exe that ships with Windows — no SDK needed. The app is pure
-Win32 on top of the .NET Framework runtime: no WinForms, no GDI+, no visual styles. Idle cost is
-one sleeping thread, zero timers while the overlay is hidden, ~17 MB working set (~60% less than
-the WinForms version the tool used before).
+A lightweight Windows 11 tray utility that covers the screen with a solid color. It is useful when you want a dark screen without turning off the monitor.
 
+### Usage
 
-Topmost popup that never activates and never appears in Alt+Tab. Turning the fill off: the close
-button on the overlay or a click on the tray icon. The auto-hidden taskbar does not reveal under a
-fullscreen window on current Windows - accepted by design; nothing is hooked into the shell and no
-bottom-strip workarounds are made.
+Run `BlackScreen.exe`. Click its tray icon or choose **Вкл/Выкл** from the menu to show or hide the overlay. The cursor remains visible. Move the mouse to reveal the close button in the upper-right corner of the primary screen; it disappears after about 1.2 seconds without movement. Click it to hide the overlay.
 
-## Tray menu
+The overlay stays above other windows without taking focus or appearing in Alt+Tab. An auto-hidden taskbar does not appear over the full-screen overlay. The interface and tray menu are in Russian.
 
-- **Вкл/Выкл** — toggle the overlay.
-- **Настройки** — fill color picker, «Заливать все экраны» (off = primary monitor only),
-  «Автозапуск с Windows». Saved to `HKCU\Software\TrayBlackScreen` (color, screens) and the
-  `Run` key (autostart, for this exe path).
-- **Выйти** — quit.
+### Settings
 
-## Build
+Right-click the tray icon and select **Настройки**:
 
-Needs nothing installed, uses the C# compiler bundled with Windows:
+- **Цвет заливки** — choose the fill color.
+- **Заливать все экраны** — cover all monitors; when unchecked, cover only the primary monitor.
+- **Автозапуск с Windows** — start the utility when signing in to Windows.
+
+Select **Выйти** from the tray menu to exit. Color and monitor settings are stored in `HKCU\Software\TrayBlackScreen`; autostart is stored in the current user's Windows `Run` key. Only one instance can run at a time.
+
+### Build and self-test
+
+The project is a single C# file using Win32 APIs and the .NET Framework runtime. It uses no WinForms or GDI+. The build script uses the 64-bit .NET Framework C# compiler supplied with Windows; no separate SDK is required.
+
+From the project directory, run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File build.ps1          # BlackScreen.exe (winexe)
-powershell -ExecutionPolicy Bypass -File build.ps1 -Console # BlackScreenCon.exe (console)
+powershell -ExecutionPolicy Bypass -File .\build.ps1          # BlackScreen.exe
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Console # also builds BlackScreenCon.exe
 ```
 
-`BlackScreen.exe --autostart on|off` sets or clears autostart without the UI.
-`BlackScreen.exe --selftest` shows the overlay for ~3 s and checks the primary/all-screen geometry,
-the close button (hidden until the mouse moves, fades out when idle, hides the overlay on a real
-click, ignores clicks elsewhere), and config round-trip (exit code 0 = pass; build with `-Console`
-to see the output). Only one instance can run at a time, and the selftest refuses to run next to it.
+To run the self-test, first exit the running tray utility, then run:
+
+```powershell
+.\BlackScreenCon.exe --selftest
+```
+
+The test temporarily shows the overlay, moves the cursor and changes settings, then restores them. It checks screen geometry, the close button and settings round-trip. Exit code `0` indicates success. `BlackScreen.exe --autostart on` and `BlackScreen.exe --autostart off` enable and disable autostart for that executable without opening the UI.
+
+While the overlay is hidden, the application waits for Windows messages and runs no overlay timer. The fill color is cached during painting and refreshed when the overlay is shown or settings change.
+
+## Русский
+
+Легковесная утилита для Windows 11, которая работает в системном трее и покрывает экран выбранным цветом. Она пригодится, когда нужно затемнить экран, не выключая монитор.
+
+### Использование
+
+Запустите `BlackScreen.exe`. Нажмите на значок в трее или выберите в меню **Вкл/Выкл**, чтобы показать или скрыть заливку. Курсор остаётся видимым. При движении мыши в правом верхнем углу основного экрана появляется кнопка закрытия; примерно через 1,2 секунды без движения она исчезает. Нажмите на неё, чтобы убрать заливку.
+
+Заливка находится поверх других окон, не перехватывает фокус и не появляется в Alt+Tab. Автоматически скрываемая панель задач не показывается поверх полноэкранной заливки.
+
+### Настройки
+
+Нажмите правой кнопкой на значок в трее и выберите **Настройки**:
+
+- **Цвет заливки** — выбор цвета.
+- **Заливать все экраны** — заливка всех мониторов; если флажок снят, используется только основной монитор.
+- **Автозапуск с Windows** — запуск утилиты при входе в Windows.
+
+Для завершения работы выберите **Выйти** в меню трея. Цвет и выбор мониторов хранятся в `HKCU\Software\TrayBlackScreen`, автозапуск — в разделе Windows `Run` текущего пользователя. Одновременно может работать только один экземпляр утилиты.
+
+### Сборка и самопроверка
+
+Проект состоит из одного файла C# и использует Win32 API и среду .NET Framework, без WinForms и GDI+. Скрипт сборки использует 64-битный компилятор C# из .NET Framework, поставляемый с Windows; отдельно устанавливать SDK не требуется.
+
+В папке проекта выполните:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1          # BlackScreen.exe
+powershell -ExecutionPolicy Bypass -File .\build.ps1 -Console # также создаёт BlackScreenCon.exe
+```
+
+Для самопроверки сначала закройте работающую утилиту через трей, затем выполните:
+
+```powershell
+.\BlackScreenCon.exe --selftest
+```
+
+Тест временно включает заливку, перемещает курсор и изменяет настройки, после чего восстанавливает их. Он проверяет размеры заливки, кнопку закрытия и сохранение настроек. Код выхода `0` означает успех. Команды `BlackScreen.exe --autostart on` и `BlackScreen.exe --autostart off` включают и выключают автозапуск указанного исполняемого файла без открытия интерфейса.
+
+Пока заливка скрыта, приложение ожидает сообщения Windows и не запускает таймер заливки. При отрисовке используется сохранённый цвет; он обновляется при включении заливки или изменении настроек.
